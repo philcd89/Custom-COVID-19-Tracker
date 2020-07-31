@@ -1,0 +1,523 @@
+---
+title: "COVID-19 Local Tracking"
+author: "Phillip Desrochers"
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: spacelab
+    includes:
+      after_body: footer.html
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+# Introduction
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# rmarkdown::find_pandoc(cache = FALSE)
+# rmarkdown::find_pandoc(version = "2.9.2.1")
+```
+
+<br>
+
+This code collates data via the [NY Times COVID-19](https://www.nytimes.com/interactive/2020/us/coronavirus-us-cases.html) tracking project by relevant counties.  Results are updated every day at 4:00 PM EST.
+
+Use the table of contents on the left to navigate to your state.  Then, click the appropriate tab to select your county.
+
+Risk assessments for each county are set according to [Harvard Global Health Institute](https://globalepidemics.org/wp-content/uploads/2020/06/key_metrics_and_indicators_v4.pdf) parameters.  For reference and comparison, you can view their tool at https://globalepidemics.org/key-metrics-for-covid-suppression/.
+
+<center>
+![FigName](Risk levels.jpeg)
+</center>
+
+<br>
+
+***
+
+```{r read in data, message=FALSE, warning=FALSE}
+
+library(readr)
+library(tidyverse)
+library(usmap)
+library(viridis)
+library(scales)
+library(sf)
+library(plotly)
+library(patchwork)
+library(kableExtra)
+
+#Get past and today's COVID data
+todayDataURL = 'https://raw.githubusercontent.com/nytimes/covid-19-data/master/live/us-counties.csv'
+today_covid_data = read_csv(url(todayDataURL))
+pastDataURL = 'https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv'
+past_covid_data = read_csv(url(pastDataURL))
+
+cum_covid_data = rbind(past_covid_data, select(today_covid_data, c("date", "county", "state", "fips", "cases", "deaths")))
+cum_covid_data = cum_covid_data[with(cum_covid_data, order(date, state, county)),]
+# cum_covid_data = cum_covid_data %>%
+#   filter(date > as.Date("2020-04-30"))
+
+# NYT data lumps NYC boroughs together, so need to manually create those counties to plot.  For simplicity's sake, I'm just assigning the total NY count to all boroughs
+NYCdata = cum_covid_data %>%
+  filter(county == "New York City")
+
+Manhattan = NYCdata
+Manhattan$fips = 36061
+Manhattan$county = "Manhattan"
+
+Bronx = NYCdata
+Bronx$fips = 36005
+Bronx$county = "Bronx"
+
+Queens = NYCdata
+Queens$fips = 36081
+Queens$county = "Queens"
+
+Brooklyn = NYCdata
+Brooklyn$fips = 36047
+Brooklyn$county = "Brooklyn"
+
+Staten_Island = NYCdata
+Staten_Island$fips = 36085
+Staten_Island$county = "Staten Island"
+
+cum_covid_data = rbind(cum_covid_data, Manhattan, Bronx, Queens, Brooklyn, Staten_Island)
+
+cum_covid_data = cum_covid_data[with(cum_covid_data, order(date, state, county)),]
+
+#Get dates
+today_date = cum_covid_data$date[nrow(cum_covid_data)]-1 #CHECK THIS!! yes, it appears that current data lags behind a day
+today_date_MDY = format(today_date, format="%B %d %Y")
+
+yesterday_date = cum_covid_data$date[nrow(cum_covid_data)]-7#-2 #CHECK THIS!!
+yesterday_date_MDY = format(yesterday_date, format="%B %d %Y")
+
+#Compute today's new cases
+yesterday_covid_data = filter(cum_covid_data, date == today_date-7)#-2)
+today_covid_data2 = filter(cum_covid_data, date == today_date-1) #today's data with modified NYC data
+#today (6/22/2020), the NYC data for today and yesterday are the same....sooo check that.  As of right now I'm using -2 and -1 days 
+
+#Merge Dataframes
+new_case_data = merge(yesterday_covid_data, today_covid_data2, by = "fips")
+data(countypop) # Using 2015 census estimates provided by usmap package.  It's just easier.
+new_case_data = merge(new_case_data, countypop, by = "fips")
+new_case_data = new_case_data %>%
+  mutate(new_cases = ((cases.y - cases.x)/7)/pop_2015*100000) #Taking 7 day average here)
+
+```
+
+
+
+```{r load functions, echo = FALSE}
+
+source("func_plot_state.R")
+source("func_info_county.R")
+
+```
+
+
+# **Full US Map**
+```{r create USA Maps, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5}
+# Create USA MAP: TOTAL CASES
+states <- plot_usmap("states", color = "black", fill = alpha(0.01), size = 1)
+
+counties_total <- plot_usmap(data = today_covid_data2, values = "cases", color = "black", size = 0.5)
+
+USA_map_total = ggplot() +
+  counties_total$layers[[1]] + #counties needs to be on top of states for this to work
+  states$layers[[1]] +
+  counties_total$theme + 
+  coord_equal()+
+  scale_fill_viridis(limits = c(0, 3000), oob = squish, breaks = c(0, 1000, 2000, 3000), labels = c("0", "1000", "2000", ">3000"))+
+  labs(fill = "Total cases")+
+  theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 14))+
+  ggtitle(paste('Total Cases:', today_date_MDY))
+
+
+# Create USA MAP: NEW CASES
+counties_new <- plot_usmap(data = new_case_data, values = "new_cases", color = "black", size = 0.5)
+
+USA_map_new = ggplot() +
+  counties_new$layers[[1]] + #counties needs to be on top of states for this to work
+  states$layers[[1]] +
+  counties_new$theme + 
+  coord_equal()+
+  scale_fill_viridis(limits = c(0, 25), oob = squish, breaks = c(0, 5, 10, 15, 20, 25), labels = c("0", "5", "10", "15", "20",  ">25"))+
+  labs(fill = "New cases (per 100k)")+
+  theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 14))+
+  ggtitle(paste('New Cases per 100,000 residents: ', yesterday_date_MDY, "-", today_date_MDY, sep = ""))
+
+
+USA_map_total
+USA_map_new
+```
+
+<br>
+
+***
+
+# **Massachusetts** {.tabset .tabset-fade .tabset-pills}
+```{r Massachusetts maps, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=3}
+
+MA_map = plot.state("MA")
+MA_map
+
+```
+
+
+<br>
+
+## Essex County
+```{r MA Essex, message = FALSE, warning = FALSE}
+
+MA_Essex = info.county("Massachusetts", "Essex", 25009)
+risk_level = MA_Essex[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MA_Essex[[7]]
+
+```
+
+**ESSEX COUNTY SUMMARY:**
+
+* Essex county reported **`r MA_Essex[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MA_Essex[2]`**, or **`r MA_Essex[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MA Essex Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Essex[[4]]
+
+```
+
+
+```{r MA Essex Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Essex[[5]]
+
+```
+
+## Suffolk County
+```{r MA Suffolk, message = FALSE, warning = FALSE}
+
+MA_Suffolk = info.county("Massachusetts", "Suffolk", 25025)
+risk_level = MA_Suffolk[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MA_Suffolk[[7]]
+
+```
+
+**SUFFOLK COUNTY SUMMARY:**
+
+* Suffolk county reported **`r MA_Suffolk[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MA_Suffolk[2]`**, or **`r MA_Suffolk[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MA Suffolk Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Suffolk[[4]]
+
+```
+
+
+```{r MA Suffolk Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Suffolk[[5]]
+
+```
+
+
+## Middlesex County
+
+```{r MA Middlesex, message = FALSE, warning = FALSE}
+
+MA_Middlesex = info.county("Massachusetts", "Middlesex", 25017)
+risk_level = MA_Middlesex[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MA_Middlesex[[7]]
+
+```
+
+**MIDDLESEX COUNTY SUMMARY:**
+
+* Middlesex county reported **`r MA_Middlesex[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MA_Middlesex[2]`**, or **`r MA_Middlesex[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MA Middlesex Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Middlesex[[4]]
+
+```
+
+
+```{r MA Middlesex Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Middlesex[[5]]
+
+```
+
+
+## Barnstable County
+
+```{r MA Barnstable, message = FALSE, warning = FALSE}
+
+MA_Barnstable = info.county("Massachusetts", "Barnstable", 25001)
+risk_level = MA_Barnstable[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MA_Barnstable[[7]]
+
+```
+
+**BARNSTABLE COUNTY SUMMARY:**
+
+* Barnstable county reported **`r MA_Barnstable[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MA_Barnstable[2]`**, or **`r MA_Barnstable[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MA Barnstable Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Barnstable[[4]]
+
+```
+
+
+```{r MA Barnstable Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MA_Barnstable[[5]]
+
+```
+
+# {.toc-ignore}
+
+<br>
+
+***
+
+# **New Hampshire** {.tabset .tabset-fade .tabset-pills}
+```{r New Hampshire maps, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=3}
+
+NH_map = plot.state("NH")
+NH_map
+
+```
+
+
+<br>
+
+## Rockingham County
+```{r NH Rockingham, message = FALSE, warning = FALSE}
+
+NH_Rockingham = info.county("New Hampshire", "Rockingham", 33015)
+risk_level = NH_Rockingham[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = NH_Rockingham[[7]]
+
+```
+
+**ROCKINGHAM COUNTY SUMMARY:**
+
+* Rockingham county reported **`r NH_Rockingham[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r NH_Rockingham[2]`**, or **`r NH_Rockingham[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+
+```{r NH Rockingham Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NH_Rockingham[[4]]
+
+```
+
+
+```{r NH Rockingham Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NH_Rockingham[[5]]
+
+```
+
+## Hillsborough County
+
+```{r NH Hillsborough, message = FALSE, warning = FALSE}
+
+NH_Hillsborough = info.county("New Hampshire", "Hillsborough", 33011)
+risk_level = NH_Hillsborough[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = NH_Hillsborough[[7]]
+```
+
+**HILLSBOROUGH COUNTY SUMMARY:**
+
+* Hillsborough county reported **`r NH_Hillsborough[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r NH_Hillsborough[2]`**, or **`r NH_Hillsborough[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r NH Hillsborough Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NH_Hillsborough[[4]]
+
+```
+
+
+```{r NH Hillsborough Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NH_Hillsborough[[5]]
+
+```
+
+# {.toc-ignore}
+
+<br>
+
+***
+
+# **Virginia** {.tabset .tabset-fade .tabset-pills}
+```{r Virginia maps, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=3}
+
+VA_map = plot.state("VA")
+VA_map
+
+```
+
+
+<br>
+
+## Richmond County
+```{r VA Richmond, message = FALSE, warning = FALSE}
+
+VA_Richmond = info.county("Virginia", "Richmond", 51159)
+risk_level = VA_Richmond[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = VA_Richmond[[7]]
+
+```
+
+**RICHMOND COUNTY SUMMARY:**
+
+* Richmond county reported **`r VA_Richmond[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r VA_Richmond[2]`**, or **`r VA_Richmond[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r VA Richmond Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+VA_Richmond[[4]]
+
+```
+
+
+```{r VA Richmond Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+VA_Richmond[[5]]
+
+```
+
+# {.toc-ignore}
+
+<br>
+
+***
+
+# **Maryland** {.tabset .tabset-fade .tabset-pills}
+```{r Maryland maps, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=3}
+
+MD_map = plot.state("MD")
+MD_map
+
+```
+
+<br>
+
+## Worcester County
+```{r MD Worcester, message = FALSE, warning = FALSE}
+
+MD_Worcester = info.county("Maryland", "Worcester", 24047)
+risk_level = MD_Worcester[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MD_Worcester[[7]]
+```
+
+**WORCESTER COUNTY SUMMARY:**
+
+* Worcester county reported **`r MD_Worcester[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MD_Worcester[2]`**, or **`r MD_Worcester[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MD Worcester Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MD_Worcester[[4]]
+
+```
+
+
+```{r MD Worcester Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MD_Worcester[[5]]
+
+```
+
+## Anne Arundel County
+
+```{r MD Anne Arundel, message = FALSE, warning = FALSE}
+
+MD_Anne_Arundel = info.county("Maryland", "Anne Arundel", 24003)
+risk_level = MD_Anne_Arundel[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = MD_Anne_Arundel[[7]]
+```
+
+**ANNE ARUNDEL COUNTY SUMMARY:**
+
+* Anne_Arundel county reported **`r MD_Anne_Arundel[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r MD_Anne_Arundel[2]`**, or **`r MD_Anne_Arundel[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r MD Anne Arundel Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MD_Anne_Arundel[[4]]
+
+```
+
+
+```{r MD Anne Arundel Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+MD_Anne_Arundel[[5]]
+
+```
+
+# {.toc-ignore}
+
+<br>
+
+***
+
+# **North Carolina** {.tabset .tabset-fade .tabset-pills}
+```{r North Carolina maps, message=FALSE, warning=FALSE, fig.align="center", fig.width=8, fig.height=3}
+
+NC_map = plot.state("NC")
+NC_map
+
+```
+
+
+## Guilford County
+
+```{r NC Guilford, message = FALSE, warning = FALSE}
+
+NC_Guilford = info.county("North Carolina", "Guilford", 37081)
+risk_level = NC_Guilford[[6]] # for some reason text_spec() doesn't like list objects, so need to assign these to their own variables.
+risk_color = NC_Guilford[[7]]
+```
+
+**GUILFORD COUNTY SUMMARY:**
+
+* Guilford county reported **`r NC_Guilford[1]`** new case(s) on `r today_date_MDY`.
+* Over the past seven days, the average number of new cases per day is **`r NC_Guilford[2]`**, or **`r NC_Guilford[3]`** cases per 100,000 residents.
+* Currently, the level of risk is **`r text_spec(risk_level, background = risk_color, font_size = 16)`**.
+
+```{r NC Guilford Plot full, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases since beginning of pandemic.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NC_Guilford[[4]]
+
+```
+
+
+```{r NC Guilford Plot past 30, message = FALSE, warning = FALSE, fig.align="center", fig.width=8, fig.height=5, fig.cap="New cases in past 30 days.  Bars represent new cases each day.  Line represents the 7-day moving average"}
+
+NC_Guilford[[5]]
+
+```
