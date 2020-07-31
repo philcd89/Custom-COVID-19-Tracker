@@ -3,6 +3,7 @@ title: "COVID-19 Local Tracking"
 author: "Phillip Desrochers"
 output:
   html_document:
+    keep_md: true
     df_print: paged
     code_folding: hide
     toc: true
